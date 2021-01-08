@@ -1,7 +1,7 @@
 from .core import Unit
 import numpy as np
 
-class thermalUnit(Unit):
+class ThermalUnit(Unit):
     def __init__(self, name, input_output, fuel_cost,
                     min_power=-np.inf, max_power=np.inf):
         super().__init__(name)
