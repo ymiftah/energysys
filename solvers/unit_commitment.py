@@ -4,34 +4,18 @@ import pandas as pd
 
 from pyomo.environ import *
 
-
-class QPModel(object):
+class BaseModel(object):
     def __init__(self):
         self.m = None
-        self.built = False
 
-    def build_model(self, system, load):
-        r = system.reserve_req
-
-        m = ConcreteModel()
+    def _build_units_equations(self, system):
+        m = self.m
         m.units = Set(initialize=[u.name for u in system])
-        m.t = Set(initialize=list(range(len(load))), ordered=True)
         
-        m.varPower = Var(m.t, m.units, domain=NonNegativeReals)
-        m.binStartUp = Var(m.t, m.units, domain=Binary, initialize=0)
+        m.varPower    = Var(m.t, m.units, domain=NonNegativeReals)
+        m.binStartUp  = Var(m.t, m.units, domain=Binary, initialize=0)
         m.binShutDown = Var(m.t, m.units, domain=Binary, initialize=0)
-        m.binIsOn = Var(m.t, m.units, domain=Binary, initialize=0)
-        m.cost = Objective(
-            expr = sum(u.input_output(m.varPower[t, u.name]) * u.fuel_cost for u in system for t in m.t)
-                   + sum(m.binStartUp[t, u.name] * u.start_up_cost for u in system for t in m.t)
-                   + sum((m.binIsOn[t, u.name] - 1) * u.curve[0] for u in system for t in m.t)
-                   , sense = minimize,
-        )
-
-        # Power balance
-        m.eq_balance = Constraint(m.t, 
-            rule=lambda m, t: sum(m.varPower[t, u] for u in m.units) >= load[t])
-
+        m.binIsOn     = Var(m.t, m.units, domain=Binary, initialize=0)
             
         # Startup Equations
         def eq_startup(m, t, u):
@@ -84,60 +68,69 @@ class QPModel(object):
         m.eq_min_power = Constraint(m.t, m.units, rule=eq_min_power)
         m.eq_max_power = Constraint(m.t, m.units, rule=eq_max_power)
 
-        # Reserves
+    # Reserves
+    def _build_reserve_equations(self, system):
+        m = self.m
+        r = system.reserve_req
+        if r == 0:
+            return
+        m.varReserve = Var(m.t, m.units, domain=NonNegativeReals)
+        # Reserve > Power
+        m.eq_reserve_power = Constraint(m.t, m.units, 
+            rule=lambda m, t, u: m.varReserve[t,u] >= m.varPower[t,u])
+        # Reserve < Max Power
+        m.eq_reserve_max_power = Constraint(m.t, m.units, 
+            rule=lambda m, t, u: m.varReserve[t,u] <= system[u].max_power * m.binIsOn[t, u])
+        # Reserve ramp up
+        m.eq_reserve_ramp_up = Constraint(m.t, m.units, 
+            rule=lambda m, t, u: (
+            Constraint.Skip if (system[u].ramp_up is None or t == m.t.first())
+            else m.varReserve[t, u] <= m.varPower[t-1, u] + system[u].ramp_up * m.binIsOn[t-1,u] + system[u].min_power * m.binStartUp[t,u]
+            )
+        )
+        # Reserve ramp down
+        m.eq_reserve_ramp_up = Constraint(m.t, m.units, 
+            rule=lambda m, t, u: (
+            Constraint.Skip if (system[u].ramp_up is None or t == m.t.last())
+            else m.varReserve[t, u] <= system[u].min_power * m.binShutDown[t+1,u] + system[u].min_power * (m.binIsOn[t,u] - m.binShutDown[t+1,u])  
+            )
+        )
+        self.m = m
+
+    # Power Balance
+    def _build_balance_equations(self, system, load):
+        m = self.m
+        # Power reserve
+        m.eq_balance_power = Constraint(m.t, 
+            rule=lambda m, t: sum(m.varPower[t,u] for u in m.units) >= load[t]
+            )
+        r = system.reserve_req
         if 1 > r > 0:
-            m.varReserve = Var(m.t, m.units, domain=NonNegativeReals)
             # Power reserve
             m.eq_balance_reserve = Constraint(m.t, 
-                rule=lambda m, t: sum(m.varReserve[t,u] for u in m.units) >= load[t]* (1+r))
-            # Reserve > Power
-            m.eq_reserve_power = Constraint(m.t, m.units, 
-                rule=lambda m, t, u: m.varReserve[t,u] >= m.varPower[t,u])
-            # Reserve < Max Power
-            m.eq_reserve_max_power = Constraint(m.t, m.units, 
-                rule=lambda m, t, u: m.varReserve[t,u] <= system[u].max_power * m.binIsOn[t, u])
-            # Reserve ramp up
-            m.eq_reserve_ramp_up = Constraint(m.t, m.units, 
-                rule=lambda m, t, u: (
-                Constraint.Skip if (system[u].ramp_up is None or t == m.t.first())
-                else m.varReserve[t, u] <= m.varPower[t-1, u] + system[u].ramp_up * m.binIsOn[t-1,u] + system[u].min_power * m.binStartUp[t,u]
+                rule=lambda m, t: sum(m.varReserve[t,u] for u in m.units) >= load[t] * (1+r)
                 )
-            )
-            # Reserve ramp down
-            m.eq_reserve_ramp_up = Constraint(m.t, m.units, 
-                rule=lambda m, t, u: (
-                Constraint.Skip if (system[u].ramp_up is None or t == m.t.last())
-                else m.varReserve[t, u] <= system[u].min_power * m.binShutDown[t+1,u] + system[u].min_power * (m.binIsOn[t,u] - m.binShutDown[t+1,u])  
-                )
-            )
-
-        # Update 
         self.m = m
-        self.built = True
+        
+    def _build_model(self, system, load):
+        self.m   = ConcreteModel()
+        self.m.t = Set(initialize=list(range(len(load))), ordered=True)
         
         
-    def solve(self, system, load, tee=0, force_build=False):
-        if not self.built or force_build: 
-            self.build_model(system, load)    
-        sol = SolverFactory("cplex")
-        sol.options["mipgap"] = 0.01
-        sol.options["time"] = 200
-        res = sol.solve(self.m, tee=tee)
-        return value(self.m.cost)
+        self._build_units_equations(system)
+        self._build_reserve_equations(system)
+        self._build_balance_equations(system, load)
 
 
-class LPModel(QPModel):
+class LPModel(BaseModel):
     def __init__(self):
         super().__init__()
-
-    def build_model(self, system, load):
-        super().build_model(system, load)
+    
+    def _build_linear_objective(self, system, num_lines=2):
         m = self.m
-        m.del_component(m.cost)
-
         m.varFuelCons = Var(m.t, m.units, domain=NonNegativeReals)
         m.support_lines = ConstraintList()
-        num_lines = 2
+        num_lines = num_lines
         for t in m.t:
             for u in m.units:
                 p = np.linspace(system[u].min_power, system[u].max_power, num_lines+1)
@@ -154,13 +147,14 @@ class LPModel(QPModel):
                    + sum(m.binStartUp[t, u.name] * u.start_up_cost for u in system for t in m.t)
                    , sense = minimize,
         )
-
         self.m = m
-        self.built = True
+
+    def _build_model(self, system, load):
+        super()._build_model(system, load)
+        self._build_linear_objective(system)
         
     def solve(self, system, load, tee=0, force_build=False):
-        if not self.built or force_build: 
-            self.build_model(system, load)    
+        self._build_model(system, load)    
         sol = SolverFactory("cbc", executable="./solvers/cbc/cbc.exe")
         sol.options["ratio"] = 0.01
         sol.options["sec"] = 200
@@ -173,3 +167,69 @@ class LPModel(QPModel):
         df = pd.DataFrame(list(d.values()), index=mux).unstack(fill_value=0)
         df.columns = df.columns.droplevel()
         return df
+
+class FlowModel(LPModel):
+    def __init__(self):
+        super().__init__()
+
+    def _build_balance_equations(self, network, load):
+        m = self.m
+        m.buses = Set(initialize=[bus for bus in load.keys()])
+        m.arcs = Set(initialize=network.lines.keys())
+
+        def busOut_init(m, bus):
+            for i, j in m.arcs:
+                if i == bus:
+                    yield j
+        m.busOut = Set(m.buses, initialize=busOut_init)
+
+        def busIn_init(m, bus):
+            for i, j in m.arcs:
+                if j == bus:
+                    yield i
+        m.busIn = Set(m.buses, initialize=busIn_init)
+    
+        m.varFlow = Var(m.t, m.arcs, domain=NonNegativeReals, initialize=0)
+        def flow_limit(m, t, a, b):
+            if network[(a,b)].power_lim is None:
+                return Constraint.Skip
+            return m.varFlow[t, a, b] <= network[(a,b)].power_lim
+        m.eq_flow_limits = Constraint(m.t, m.arcs, rule=flow_limit) 
+
+        def eq_flow_balance(m, t, bus):
+            return sum(m.varPower[t, u] for u in m.units if network.link(bus, u)) \
+                + sum(m.varFlow[t, i, bus] for i in m.busIn[bus]) \
+                - sum(m.varFlow[t, bus, j] for j in m.busOut[bus]) \
+                == load[bus][t] 
+        m.eq_flow_balance = Constraint(m.t, m.buses, rule=eq_flow_balance)
+        
+        r = network.system.reserve_req
+        if 1 > r > 0:
+            m.varFlowReserve = Var(m.t, m.arcs, domain=NonNegativeReals)
+            # Power reserve
+            def eq_flow_reserve(m, t, bus):
+                return sum(m.varPower[t, u] for u in m.units if network.link(bus, u)) \
+                    + sum(m.varFlowReserve[t, i, bus] for i in m.busIn[bus]) \
+                    - sum(m.varFlowReserve[t, bus, j] for j in m.busOut[bus]) \
+                    >= load[t, bus] *(1+r)
+            m.eq_flow_reserve = Constraint(m.t, m.buses,
+                rule=lambda m, t, bus: sum(m.varReserve[t,u] for u in m.units) >= load[bus][t] * (1+r)
+                )
+        self.m = m
+
+    def _build_model(self, network, load):
+        self.m   = ConcreteModel()
+        T = len(list(load.values())[0])
+        self.m.t = Set(initialize=list(range(T)), ordered=True)
+        
+        self._build_units_equations(network.system)
+        self._build_reserve_equations(network.system)
+        self._build_balance_equations(network, load)
+        self._build_linear_objective(network.system)
+
+        # Update
+        self.m.dual = Suffix(direction=Suffix.IMPORT)
+
+    def get_lmp(self):
+        # return a nested dictionary {bus : {t: dual}}
+        return {b : {t: self.m.dual[self.m.eq_flow_balance[t,b]] for t in self.m.t} for b in self.m.buses}

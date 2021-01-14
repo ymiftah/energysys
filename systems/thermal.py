@@ -35,6 +35,6 @@ class ThermalUnit(Unit):
 
 
 class UCSystem(System):
-    def __init__(self, name, units, reserve_req=0):
-        super().__init__(name, units)
+    def __init__(self, units, reserve_req=0):
+        super().__init__(units)
         self.reserve_req = reserve_req
