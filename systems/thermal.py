@@ -1,4 +1,4 @@
-from .core import Unit, System
+from .core import Unit
 import numpy as np
 
 class ThermalUnit(Unit):
@@ -31,10 +31,3 @@ class ThermalUnit(Unit):
 
     def inv_marginal_cost(self, x):
         return (x / self.fuel_cost - self.curve[1]) / 2 / (self.curve[2] + 1e-7)
-
-
-
-class UCSystem(System):
-    def __init__(self, units, reserve_req=0):
-        super().__init__(units)
-        self.reserve_req = reserve_req

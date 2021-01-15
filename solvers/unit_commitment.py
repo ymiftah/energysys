@@ -143,7 +143,7 @@ class LPModel(BaseModel):
                         + (fp[i+1] - fp[i])/(p[i+1]-p[i]) * (m.varPower[t, u] - p[i])
                         )
         m.cost = Objective(
-            expr = sum(m.varFuelCons[t, u.name] for u in system for t in m.t)
+            expr = sum(m.varFuelCons[t, u.name] * u.fuel_cost for u in system for t in m.t)
                    + sum(m.binStartUp[t, u.name] * u.start_up_cost for u in system for t in m.t)
                    , sense = minimize,
         )
@@ -168,13 +168,13 @@ class LPModel(BaseModel):
         df.columns = df.columns.droplevel()
         return df
 
-class FlowModel(LPModel):
+class DCModel(LPModel):
     def __init__(self):
         super().__init__()
 
     def _build_balance_equations(self, network, load):
         m = self.m
-        m.buses = Set(initialize=[bus for bus in load.keys()])
+        m.buses = Set(initialize=network.buses)
         m.arcs = Set(initialize=network.lines.keys())
 
         def busOut_init(m, bus):
@@ -197,10 +197,12 @@ class FlowModel(LPModel):
         m.eq_flow_limits = Constraint(m.t, m.arcs, rule=flow_limit) 
 
         def eq_flow_balance(m, t, bus):
+            demand = load.get(bus, None)
+            demand = 0 if demand is None else demand[t]
             return sum(m.varPower[t, u] for u in m.units if network.link(bus, u)) \
                 + sum(m.varFlow[t, i, bus] for i in m.busIn[bus]) \
                 - sum(m.varFlow[t, bus, j] for j in m.busOut[bus]) \
-                == load[bus][t] 
+                == demand
         m.eq_flow_balance = Constraint(m.t, m.buses, rule=eq_flow_balance)
         
         r = network.system.reserve_req
@@ -227,9 +229,95 @@ class FlowModel(LPModel):
         self._build_balance_equations(network, load)
         self._build_linear_objective(network.system)
 
-        # Update
         self.m.dual = Suffix(direction=Suffix.IMPORT)
 
     def get_lmp(self):
         # return a nested dictionary {bus : {t: dual}}
         return {b : {t: self.m.dual[self.m.eq_flow_balance[t,b]] for t in self.m.t} for b in self.m.buses}
+
+
+class SCDCModel(DCModel):
+    def __init__(self):
+        super().__init__()
+
+    def _build_security_constraints(self, network, load, contingencies='all'):
+        m = self.m
+        system = network.system
+
+        if contingencies == 'all':
+            m.contingencies = SetOf(m.arcs)
+        else:
+            m.contingencies = Set(within=m.arcs, initialize=contingencies)
+        m.varPowerC = Var(m.t, m.units, m.contingencies, domain=NonNegativeReals)
+        m.varFlowC = Var(m.t, m.arcs, m.contingencies, domain=NonNegativeReals, initialize=0)
+            
+        # Ramp Equations
+        def eq_contingency_ramp_up(m, t, u, ca, cb):
+            if  system[u].ramp_up is None or t == m.t.first():
+                return Constraint.Skip
+            else:
+                return m.varPowerC[t, u, ca, cb] - m.varPowerC[t-1, u, ca, cb] <= system[u].ramp_up * m.binIsOn[t-1,u] + system[u].min_power * m.binStartUp[t,u]
+        
+        def eq_contingency_ramp_down(m, t, u, ca, cb):
+            if  system[u].ramp_down is None or t == m.t.first():
+                return Constraint.Skip
+            else:
+                return m.varPowerC[t-1, u, ca, cb] - m.varPowerC[t, u, ca, cb] <= system[u].ramp_down * m.binIsOn[t,u] + system[u].min_power * m.binShutDown[t,u]
+        m.eq_contingency_ramp_up = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_ramp_up)
+        m.eq_contingency_ramp_down = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_ramp_down)
+
+        # Min Max Power
+        def eq_contingency_min_power(m, t, u, ca, cb):
+            return m.varPowerC[t, u, ca, cb] >= system[u].min_power * m.binIsOn[t, u]
+        def eq_contingency_max_power(m, t, u, ca, cb):
+            return m.varPowerC[t, u, ca, cb] <= system[u].max_power * m.binIsOn[t, u]
+        m.eq_contingency_min_power = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_min_power)
+        m.eq_contingency_max_power = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_max_power)
+            
+        # Raction Rate Equations
+        def eq_contingency_react_up(m, t, u, ca, cb):
+            if  system[u].ramp_up is None:
+                return Constraint.Skip
+            else:
+                return m.varPowerC[t, u, ca, cb] - m.varPower[t, u] <= system[u].ramp_up/2
+        def eq_contingency_react_down(m, t, u, ca, cb):
+            if  system[u].ramp_down is None:
+                return Constraint.Skip
+            else:
+                return m.varPower[t, u] - m.varPowerC[t, u, ca, cb] <= system[u].ramp_down/2
+        m.eq_contingency_react_up = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_react_up)
+        m.eq_contingency_react_down = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_react_down)
+
+        def eq_contingency_flow_limit(m, t, a, b, ca, cb):
+            if network[(a,b)].power_lim is None:
+                return Constraint.Skip
+            return m.varFlowC[t, a, b, ca, cb] <= network[(a,b)].power_lim
+        m.eq_contingency_flow_limits = Constraint(m.t, m.arcs, m.contingencies, rule=eq_contingency_flow_limit)
+
+        def eq_contingency_flow_balance(m, t, bus, ca, cb):
+            demand = load.get(bus, None)
+            demand = 0 if demand is None else demand[t]
+            return sum(m.varPowerC[t, u, ca, cb] for u in m.units if network.link(bus, u)) \
+                + sum(m.varFlowC[t, i, bus, ca, cb] for i in m.busIn[bus]) \
+                - sum(m.varFlowC[t, bus, j, ca, cb] for j in m.busOut[bus]) \
+                == demand
+        m.eq_contingency_flow_balance = Constraint(m.t, m.buses, m.contingencies, rule=eq_contingency_flow_balance)
+
+        # Fix flow C in lane at 0
+        for c in m.contingencies:
+            for t in m.t:
+                m.varFlowC[t, c, c].fix(0)
+        
+        self.m = m
+        
+    def _build_model(self, network, load, contingencies):
+        super()._build_model(network, load)
+        self._build_security_constraints(network, load, contingencies)
+        
+    def solve(self, system, load, contingencies='all', tee=0, force_build=False):
+        self._build_model(system, load, contingencies)    
+        sol = SolverFactory("cbc", executable="./solvers/cbc/cbc.exe")
+        sol.options["ratio"] = 0.01
+        sol.options["sec"] = 200
+        res = sol.solve(self.m, tee=tee)
+        return value(self.m.cost)
