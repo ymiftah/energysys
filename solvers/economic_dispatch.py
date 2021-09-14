@@ -42,7 +42,7 @@ class QPModel(object):
             sense = pyo.minimize,
         )
         self.m.balance = pyo.Constraint(rule= lambda m: load <= sum(m.varPower[u] for u in m.units))
-        sol = pyo.SolverFactory("ipopt", executable="./solvers/ipopt/ipopt.exe")
+        sol = pyo.SolverFactory("ipopt")
         res = sol.solve(self.m, tee=tee)
         for v in self.m.component_data_objects(pyo.Var, active=True):
             print(v, pyo.value(v))  # doctest: +SKIP
