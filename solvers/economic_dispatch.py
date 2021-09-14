@@ -30,7 +30,7 @@ class QPModel(object):
     def __init__(self):
         self.m = pyo.ConcreteModel()
 
-    def solve(self, system, load, tee=0):
+    def solve(self, system, load, solver, exec, tee=0):
         self.m.units = pyo.Set(initialize=[u.name for u in system])
         lo = {u.name: u.min_power for u in system}
         up = {u.name: u.max_power for u in system}
@@ -42,7 +42,7 @@ class QPModel(object):
             sense = pyo.minimize,
         )
         self.m.balance = pyo.Constraint(rule= lambda m: load <= sum(m.varPower[u] for u in m.units))
-        sol = pyo.SolverFactory("ipopt")
+        sol = pyo.SolverFactory(solver, exec)
         res = sol.solve(self.m, tee=tee)
         for v in self.m.component_data_objects(pyo.Var, active=True):
             print(v, pyo.value(v))  # doctest: +SKIP
