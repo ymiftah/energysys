@@ -22,7 +22,7 @@ class UCSystem(System):
 
 
 class Line(object):
-    def __init__(self, arc, power_lim=None, Z=1):
+    def __init__(self, arc, power_lim=None, Z=100):
         self.arc = arc
         self.power_lim = power_lim
         self.Z = Z

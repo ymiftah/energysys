@@ -189,31 +189,32 @@ class DCModel(LPModel):
                     yield i
         m.busIn = Set(m.buses, initialize=busIn_init)
     
-        m.varFlow = Var(m.t, m.arcs, domain=NonNegativeReals, initialize=0)
-        def flow_limit(m, t, a, b):
-            if network[(a,b)].power_lim is None:
+
+        m.varAngle = Var(m.t, m.buses, domain=Reals, initialize=0)
+        for tt in m.t:
+            m.varAngle[tt, m.buses.first()].fix(0)
+        def flow_limit_up(m, t, a, b):
+            if network.power_lim(a,b) is None:
                 return Constraint.Skip
-            return m.varFlow[t, a, b] <= network[(a,b)].power_lim
-        m.eq_flow_limits = Constraint(m.t, m.arcs, rule=flow_limit) 
+            return network.Z(a,b) * (m.varAngle[t, a] - m.varAngle[t, b]) <= network.power_lim(a,b)
+        m.eq_flow_limits_up = Constraint(m.t, m.arcs, rule=flow_limit_up) 
+        def flow_limit_lo(m, t, a, b):
+            if network.power_lim(a,b) is None:
+                return Constraint.Skip
+            return network[(a,b)].Z * (m.varAngle[t, a] - m.varAngle[t, b]) >= - network.power_lim(a,b)
+        m.eq_flow_limits_lo = Constraint(m.t, m.arcs, rule=flow_limit_lo) 
 
         def eq_flow_balance(m, t, bus):
             demand = load.get(bus, None)
             demand = 0 if demand is None else demand[t]
             return sum(m.varPower[t, u] for u in m.units if network.link(bus, u)) \
-                + sum(m.varFlow[t, i, bus] for i in m.busIn[bus]) \
-                - sum(m.varFlow[t, bus, j] for j in m.busOut[bus]) \
+                + sum(network.Z(bus, i) * (m.varAngle[t, bus] - m.varAngle[t, i])
+                        for i in m.buses if i != bus) \
                 == demand
         m.eq_flow_balance = Constraint(m.t, m.buses, rule=eq_flow_balance)
         
         r = network.system.reserve_req
         if 1 > r > 0:
-            m.varFlowReserve = Var(m.t, m.arcs, domain=NonNegativeReals)
-            # Power reserve
-            def eq_flow_reserve(m, t, bus):
-                return sum(m.varPower[t, u] for u in m.units if network.link(bus, u)) \
-                    + sum(m.varFlowReserve[t, i, bus] for i in m.busIn[bus]) \
-                    - sum(m.varFlowReserve[t, bus, j] for j in m.busOut[bus]) \
-                    >= load[t, bus] *(1+r)
             m.eq_flow_reserve = Constraint(m.t, m.buses,
                 rule=lambda m, t, bus: sum(m.varReserve[t,u] for u in m.units) >= load[bus][t] * (1+r)
                 )
@@ -234,6 +235,10 @@ class DCModel(LPModel):
     def get_lmp(self):
         # return a nested dictionary {bus : {t: dual}}
         return {b : {t: self.m.dual[self.m.eq_flow_balance[t,b]] for t in self.m.t} for b in self.m.buses}
+
+    def get_lines_power(self, network):
+        return {(a,b) : {t: (value(self.m.varAngle[t, a]) - value(self.m.varAngle[t, b])) * network.Z(a,b)
+                        for t in self.m.t} for a,b in self.m.arcs}
 
 
 class SCDCModel(DCModel):
