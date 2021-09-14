@@ -62,9 +62,9 @@ class LambdaIteration(object):
         min_power = np.array([u.min_power for u in system])
         max_power = np.array([u.max_power for u in system])
         lambda_min = min(unit.marginal_cost(unit.min_power)
-                        for unit in system.units)
+                        for unit in system)
         lambda_max = max(unit.marginal_cost(unit.max_power)
-                        for unit in system.units)
+                        for unit in system)
         Delta = (lambda_max - lambda_min) / 2
         self.lambda_value = lambda_min + Delta
         eps = 1
