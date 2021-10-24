@@ -159,7 +159,8 @@ class LPModel(BaseModel):
         sol.options["ratio"] = 0.01
         sol.options["sec"] = 200
         res = sol.solve(self.m, tee=tee)
-        return value(self.m.cost)
+        status = (res.solver.status == SolverStatus.ok) and (res.solver.termination_condition == TerminationCondition.optimal)
+        return status, value(self.m.cost)
     
     def get_power(self):
         data = ((key[0], key[1], val) for key, val in self.m.varPower.extract_values().items())
@@ -323,4 +324,5 @@ class SCDCModel(DCModel):
         sol.options["ratio"] = 0.01
         sol.options["sec"] = 200
         res = sol.solve(self.m, tee=tee)
-        return value(self.m.cost)
+        status = (res.solver.status == SolverStatus.ok) and (res.solver.termination_condition == TerminationCondition.optimal)
+        return status, value(self.m.cost)
