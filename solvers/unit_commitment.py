@@ -1,4 +1,4 @@
-from solvers.economic_dispatch import QPModel
+from .economic_dispatch import QPModel
 import numpy as np
 import pandas as pd
 
@@ -153,19 +153,17 @@ class LPModel(BaseModel):
         super()._build_model(system, load)
         self._build_linear_objective(system)
         
-    def solve(self, system, load, tee=0, force_build=False):
+    def solve(self, system, load, tee=0, exec="./solvers/cbc/cbc.exe"):
         self._build_model(system, load)    
-        sol = SolverFactory("cbc", executable="./solvers/cbc/cbc.exe")
+        sol = SolverFactory("cbc", executable=exec)
         sol.options["ratio"] = 0.01
         sol.options["sec"] = 200
         res = sol.solve(self.m, tee=tee)
         return value(self.m.cost)
     
     def get_power(self):
-        d = self.m.varPower.extract_values()
-        mux = pd.MultiIndex.from_tuples(d.keys())
-        df = pd.DataFrame(list(d.values()), index=mux).unstack(fill_value=0)
-        df.columns = df.columns.droplevel()
+        data = ((key[0], key[1], val) for key, val in self.m.varPower.extract_values().items())
+        df = pd.DataFrame(data, columns =['Time', 'Unit', 'Power'])
         return df
 
 class DCModel(LPModel):
@@ -319,9 +317,9 @@ class SCDCModel(DCModel):
         super()._build_model(network, load)
         self._build_security_constraints(network, load, contingencies)
         
-    def solve(self, system, load, contingencies='all', tee=0, force_build=False):
+    def solve(self, system, load, contingencies='all', tee=0, exec="./solvers/cbc/cbc.exe"):
         self._build_model(system, load, contingencies)    
-        sol = SolverFactory("cbc", executable="./solvers/cbc/cbc.exe")
+        sol = SolverFactory("cbc", executable=exec)
         sol.options["ratio"] = 0.01
         sol.options["sec"] = 200
         res = sol.solve(self.m, tee=tee)
