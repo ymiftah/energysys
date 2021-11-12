@@ -5,11 +5,13 @@ import pandas as pd
 from pyomo.environ import *
 
 class BaseModel(object):
-    def __init__(self):
+    def __init__(self, system):
         self.m = None
+        self.system=system
 
-    def _build_units_equations(self, system):
+    def _build_units_equations(self):
         m = self.m
+        system = self.system
         m.units = Set(initialize=[u.name for u in system])
         
         m.varPower    = Var(m.t, m.units, domain=NonNegativeReals)
@@ -69,8 +71,9 @@ class BaseModel(object):
         m.eq_max_power = Constraint(m.t, m.units, rule=eq_max_power)
 
     # Reserves
-    def _build_reserve_equations(self, system):
+    def _build_reserve_equations(self):
         m = self.m
+        system = self.system
         r = system.reserve_req
         if r == 0:
             return
@@ -98,8 +101,9 @@ class BaseModel(object):
         self.m = m
 
     # Power Balance
-    def _build_balance_equations(self, system, load):
+    def _build_balance_equations(self, load):
         m = self.m
+        system = self.system
         # Power reserve
         m.eq_balance_power = Constraint(m.t, 
             rule=lambda m, t: sum(m.varPower[t,u] for u in m.units) >= load[t]
@@ -112,22 +116,23 @@ class BaseModel(object):
                 )
         self.m = m
         
-    def _build_model(self, system, load):
+    def _build_model(self, load):
         self.m   = ConcreteModel()
         self.m.t = Set(initialize=list(range(len(load))), ordered=True)
         
         
-        self._build_units_equations(system)
-        self._build_reserve_equations(system)
-        self._build_balance_equations(system, load)
+        self._build_units_equations()
+        self._build_reserve_equations()
+        self._build_balance_equations(load)
 
 
 class LPModel(BaseModel):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super(LPModel, self).__init__(*args, **kwargs)
     
-    def _build_linear_objective(self, system, num_lines=2):
+    def _build_linear_objective(self, num_lines=2):
         m = self.m
+        system = self.system
         m.varFuelCons = Var(m.t, m.units, domain=NonNegativeReals)
         m.support_lines = ConstraintList()
         num_lines = num_lines
@@ -149,12 +154,12 @@ class LPModel(BaseModel):
         )
         self.m = m
 
-    def _build_model(self, system, load):
-        super()._build_model(system, load)
-        self._build_linear_objective(system)
+    def _build_model(self, load):
+        super()._build_model(load)
+        self._build_linear_objective()
         
-    def solve(self, system, load, tee=0, exec="./solvers/cbc/cbc.exe"):
-        self._build_model(system, load)    
+    def solve(self, load, tee=0, exec="./solvers/cbc/cbc.exe"):
+        self._build_model(load)    
         sol = SolverFactory("cbc", executable=exec)
         sol.options["ratio"] = 0.01
         sol.options["sec"] = 200
@@ -168,11 +173,13 @@ class LPModel(BaseModel):
         return df
 
 class DCModel(LPModel):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, network):
+        super(DCModel, self).__init__(system=network.system)
+        self.network = network
 
-    def _build_balance_equations(self, network, load):
+    def _build_balance_equations(self, load):
         m = self.m
+        network = self.network
         m.buses = Set(initialize=network.buses)
         m.arcs = Set(initialize=network.lines.keys())
 
@@ -221,15 +228,16 @@ class DCModel(LPModel):
                 )
         self.m = m
 
-    def _build_model(self, network, load):
+    def _build_model(self, load):
+        network = self.network
         self.m   = ConcreteModel()
         T = len(list(load.values())[0])
         self.m.t = Set(initialize=list(range(T)), ordered=True)
         
-        self._build_units_equations(network.system)
-        self._build_reserve_equations(network.system)
-        self._build_balance_equations(network, load)
-        self._build_linear_objective(network.system)
+        self._build_units_equations()
+        self._build_reserve_equations()
+        self._build_balance_equations(load)
+        self._build_linear_objective()
 
         self.m.dual = Suffix(direction=Suffix.IMPORT)
 
@@ -241,7 +249,8 @@ class DCModel(LPModel):
         df = pd.DataFrame(data, columns =['Time', 'Node', 'LMP'])
         return df
 
-    def get_lines_power(self, network):
+    def get_lines_power(self):
+        network = self.network
         data = {(a,b) : {t: (value(self.m.varAngle[t, a]) - value(self.m.varAngle[t, b])) * network.Z(a,b)
                         for t in self.m.t} for a,b in self.m.arcs}
         data = ((t, a, b, power) for (a,b), val in data.items() for t, power in val.items())
@@ -250,11 +259,12 @@ class DCModel(LPModel):
 
 
 class SCDCModel(DCModel):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, *args, **kwargs):
+        super().__init__(self, *args, **kwargs)
 
-    def _build_security_constraints(self, network, load, contingencies='all'):
+    def _build_security_constraints(self, load, contingencies='all'):
         m = self.m
+        network = self.network
         system = network.system
 
         if contingencies == 'all':
@@ -333,12 +343,12 @@ class SCDCModel(DCModel):
         
         self.m = m
         
-    def _build_model(self, network, load, contingencies):
-        super()._build_model(network, load)
-        self._build_security_constraints(network, load, contingencies)
+    def _build_model(self, load, contingencies):
+        super()._build_model(load)
+        self._build_security_constraints(load, contingencies)
         
-    def solve(self, system, load, contingencies='all', tee=0, exec="./solvers/cbc/cbc.exe"):
-        self._build_model(system, load, contingencies)    
+    def solve(self, load, contingencies='all', tee=0, exec="./solvers/cbc/cbc.exe"):
+        self._build_model(load, contingencies)    
         sol = SolverFactory("cbc", executable=exec)
         sol.options["ratio"] = 0.01
         sol.options["sec"] = 200
