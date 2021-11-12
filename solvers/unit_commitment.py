@@ -260,7 +260,7 @@ class DCModel(LPModel):
 
 class SCDCModel(DCModel):
     def __init__(self, *args, **kwargs):
-        super().__init__(self, *args, **kwargs)
+        super(SCDCModel, self).__init__(*args, **kwargs)
 
     def _build_security_constraints(self, load, contingencies='all'):
         m = self.m
@@ -314,7 +314,7 @@ class SCDCModel(DCModel):
         m.varAngleC = Var(m.t, m.buses, m.contingencies, domain=Reals, initialize=0)
         for c in m.contingencies:
             for tt in m.t:
-                m.varAngleC[tt, m.buses.first(), m.contingencies].fix(0)
+                m.varAngleC[tt, m.buses.first(), c].fix(0)
         def contingencies_flow_limit_up(m, t, a, b, ca, cb):
             if network.power_lim(a,b) is None:
                 return Constraint.Skip
@@ -337,9 +337,9 @@ class SCDCModel(DCModel):
         m.eq_contingencies_flow_balance = Constraint(m.t, m.buses, m.contingencies, rule=contingencies_eq_flow_balance)
     
         # Fix flow C in lane at 0
-        for c in m.contingencies:
-            for t in m.t:
-                m.varFlowC[t, c, c].fix(0)
+        m.eq_contingencies_fix_zero = Constraint(m.t, m.contingencies,
+            rule=lambda m, t, a, b: m.varAngleC[t, a, a, b] == m.varAngleC[t, b, a, b])
+    
         
         self.m = m
         
