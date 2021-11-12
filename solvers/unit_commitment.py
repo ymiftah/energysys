@@ -137,7 +137,7 @@ class LPModel(BaseModel):
                 fp = system[u].input_output(p)
                 for i in range(num_lines):
                     m.support_lines.add(
-                        m.varFuelCons[t, u] / system[u].fuel_cost
+                        m.varFuelCons[t, u]
                         >=
                         fp[i] * m.binIsOn[t,u]
                         + (fp[i+1] - fp[i])/(p[i+1]-p[i]) * (m.varPower[t, u] - p[i])
@@ -200,22 +200,24 @@ class DCModel(LPModel):
         def flow_limit_lo(m, t, a, b):
             if network.power_lim(a,b) is None:
                 return Constraint.Skip
-            return network[(a,b)].Z * (m.varAngle[t, a] - m.varAngle[t, b]) >= - network.power_lim(a,b)
+            return network.Z(a,b) * (m.varAngle[t, a] - m.varAngle[t, b]) >= - network.power_lim(a,b)
         m.eq_flow_limits_lo = Constraint(m.t, m.arcs, rule=flow_limit_lo) 
 
         def eq_flow_balance(m, t, bus):
             demand = load.get(bus, None)
             demand = 0 if demand is None else demand[t]
             return sum(m.varPower[t, u] for u in m.units if network.link(bus, u)) \
-                + sum(network.Z(bus, i) * (m.varAngle[t, bus] - m.varAngle[t, i])
-                        for i in m.buses if i != bus) \
-                == demand
+                - demand \
+                == sum(network.Z(bus, i) * (m.varAngle[t, bus] - m.varAngle[t, i])
+                        for i in m.buses if i != bus)
         m.eq_flow_balance = Constraint(m.t, m.buses, rule=eq_flow_balance)
         
         r = network.system.reserve_req
         if 1 > r > 0:
             m.eq_flow_reserve = Constraint(m.t, m.buses,
-                rule=lambda m, t, bus: sum(m.varReserve[t,u] for u in m.units) >= load[bus][t] * (1+r)
+                rule=lambda m, t, bus:
+                    sum(m.varReserve[t,u] for u in m.units) \
+                        >= load[bus][t] * (1+r)
                 )
         self.m = m
 
@@ -253,7 +255,6 @@ class SCDCModel(DCModel):
         else:
             m.contingencies = Set(within=m.arcs, initialize=contingencies)
         m.varPowerC = Var(m.t, m.units, m.contingencies, domain=NonNegativeReals)
-        m.varFlowC = Var(m.t, m.arcs, m.contingencies, domain=NonNegativeReals, initialize=0)
             
         # Ramp Equations
         def eq_contingency_ramp_up(m, t, u, ca, cb):
@@ -292,21 +293,32 @@ class SCDCModel(DCModel):
         m.eq_contingency_react_up = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_react_up)
         m.eq_contingency_react_down = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_react_down)
 
-        def eq_contingency_flow_limit(m, t, a, b, ca, cb):
-            if network[(a,b)].power_lim is None:
-                return Constraint.Skip
-            return m.varFlowC[t, a, b, ca, cb] <= network[(a,b)].power_lim
-        m.eq_contingency_flow_limits = Constraint(m.t, m.arcs, m.contingencies, rule=eq_contingency_flow_limit)
 
-        def eq_contingency_flow_balance(m, t, bus, ca, cb):
+        m.varAngleC = Var(m.t, m.buses, m.contingencies, domain=Reals, initialize=0)
+        for c in m.contingencies:
+            for tt in m.t:
+                m.varAngleC[tt, m.buses.first(), m.contingencies].fix(0)
+        def contingencies_flow_limit_up(m, t, a, b, ca, cb):
+            if network.power_lim(a,b) is None:
+                return Constraint.Skip
+            return network.Z(a,b) * (m.varAngleC[t, a, ca, cb] - m.varAngleC[t, b, ca, cb]) <= network.power_lim(a,b)
+        m.eq_contingencies_flow_limits_up = Constraint(m.t, m.arcs, m.contingencies, rule=contingencies_flow_limit_up) 
+        def contingencies_flow_limit_lo(m, t, a, b, ca, cb):
+            if network.power_lim(a,b) is None:
+                return Constraint.Skip
+            return network.Z(a,b) * (m.varAngleC[t, a, ca, cb] - m.varAngleC[t, b, ca, cb]) >= - network.power_lim(a,b)
+        m.eq_contingencies_flow_limits_lo = Constraint(m.t, m.arcs, m.contingencies, rule=contingencies_flow_limit_lo) 
+
+
+        def contingencies_eq_flow_balance(m, t, bus, ca, cb):
             demand = load.get(bus, None)
             demand = 0 if demand is None else demand[t]
             return sum(m.varPowerC[t, u, ca, cb] for u in m.units if network.link(bus, u)) \
-                + sum(m.varFlowC[t, i, bus, ca, cb] for i in m.busIn[bus]) \
-                - sum(m.varFlowC[t, bus, j, ca, cb] for j in m.busOut[bus]) \
-                == demand
-        m.eq_contingency_flow_balance = Constraint(m.t, m.buses, m.contingencies, rule=eq_contingency_flow_balance)
-
+                - demand \
+                == sum(network.Z(bus, i) * (m.varAngleC[t, bus, ca, cb] - m.varAngleC[t, i, ca, cb])
+                        for i in m.buses if i != bus)
+        m.eq_contingencies_flow_balance = Constraint(m.t, m.buses, m.contingencies, rule=contingencies_eq_flow_balance)
+    
         # Fix flow C in lane at 0
         for c in m.contingencies:
             for t in m.t:
