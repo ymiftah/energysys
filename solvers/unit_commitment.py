@@ -235,11 +235,18 @@ class DCModel(LPModel):
 
     def get_lmp(self):
         # return a nested dictionary {bus : {t: dual}}
-        return {b : {t: self.m.dual[self.m.eq_flow_balance[t,b]] for t in self.m.t} for b in self.m.buses}
+        data = {b : {t: self.m.dual[self.m.eq_flow_balance[t,b]] for t in self.m.t} for b in self.m.buses}
+
+        data = ((t, b, lmp) for b, val in data.items() for t, lmp in val.items())
+        df = pd.DataFrame(data, columns =['Time', 'Node', 'LMP'])
+        return df
 
     def get_lines_power(self, network):
-        return {(a,b) : {t: (value(self.m.varAngle[t, a]) - value(self.m.varAngle[t, b])) * network.Z(a,b)
+        data = {(a,b) : {t: (value(self.m.varAngle[t, a]) - value(self.m.varAngle[t, b])) * network.Z(a,b)
                         for t in self.m.t} for a,b in self.m.arcs}
+        data = ((t, a, b, power) for (a,b), val in data.items() for t, power in val.items())
+        df = pd.DataFrame(data, columns =['Time', 'Node A', ' Node B', 'Power'])
+        return df
 
 
 class SCDCModel(DCModel):
