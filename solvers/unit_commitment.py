@@ -230,7 +230,6 @@ class DCModel(LPModel):
         self.m = m
 
     def _build_model(self, load):
-        network = self.network
         self.m   = ConcreteModel()
         T = len(list(load.values())[0])
         self.m.t = Set(initialize=list(range(T)), ordered=True)
@@ -302,12 +301,12 @@ class SCDCModel(DCModel):
             if  system[u].ramp_up is None:
                 return Constraint.Skip
             else:
-                return m.varPowerC[t, u, ca, cb] - m.varPower[t, u] <= system[u].ramp_up/2
+                return m.varPowerC[t, u, ca, cb] <= m.varPower[t, u] + system[u].ramp_up
         def eq_contingency_react_down(m, t, u, ca, cb):
             if  system[u].ramp_down is None:
                 return Constraint.Skip
             else:
-                return m.varPower[t, u] - m.varPowerC[t, u, ca, cb] <= system[u].ramp_down/2
+                return  m.varPowerC[t, u, ca, cb] >= m.varPower[t, u] - system[u].ramp_down
         m.eq_contingency_react_up = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_react_up)
         m.eq_contingency_react_down = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_react_down)
 
@@ -317,14 +316,14 @@ class SCDCModel(DCModel):
             for tt in m.t:
                 m.varAngleC[tt, m.buses.first(), c].fix(0)
         def contingencies_flow_limit_up(m, t, a, b, ca, cb):
-            if network.power_lim(a,b) is None:
+            if network.power_lim(a,b) is None or (a,b) == (ca, cb):
                 return Constraint.Skip
-            return network.Z(a,b) * (m.varAngleC[t, a, ca, cb] - m.varAngleC[t, b, ca, cb]) <= network.power_lim(a,b)
+            return network.Z(a, b) * (m.varAngleC[t, a, ca, cb] - m.varAngleC[t, b, ca, cb]) <= network.power_lim(a,b)
         m.eq_contingencies_flow_limits_up = Constraint(m.t, m.arcs, m.contingencies, rule=contingencies_flow_limit_up) 
         def contingencies_flow_limit_lo(m, t, a, b, ca, cb):
-            if network.power_lim(a,b) is None:
+            if network.power_lim(a,b) is None or (a,b) == (ca, cb):
                 return Constraint.Skip
-            return network.Z(a,b) * (m.varAngleC[t, a, ca, cb] - m.varAngleC[t, b, ca, cb]) >= - network.power_lim(a,b)
+            return network.Z(a, b) * (m.varAngleC[t, a, ca, cb] - m.varAngleC[t, b, ca, cb]) >= - network.power_lim(a,b)
         m.eq_contingencies_flow_limits_lo = Constraint(m.t, m.arcs, m.contingencies, rule=contingencies_flow_limit_lo) 
 
 
@@ -333,13 +332,13 @@ class SCDCModel(DCModel):
             demand = 0 if demand is None else demand[t]
             return sum(m.varPowerC[t, u, ca, cb] for u in m.units if network.link(bus, u)) \
                 - demand \
-                == sum(network.Z(bus, i) * (m.varAngleC[t, bus, ca, cb] - m.varAngleC[t, i, ca, cb])
+                == sum((0 if (bus, i) == (ca,cb) else network.Z(bus, i)) * (m.varAngleC[t, bus, ca, cb] - m.varAngleC[t, i, ca, cb])
                         for i in m.buses if i != bus)
         m.eq_contingencies_flow_balance = Constraint(m.t, m.buses, m.contingencies, rule=contingencies_eq_flow_balance)
     
-        # Fix flow C in lane at 0
-        m.eq_contingencies_fix_zero = Constraint(m.t, m.contingencies,
-            rule=lambda m, t, a, b: m.varAngleC[t, a, a, b] == m.varAngleC[t, b, a, b])
+        # # Fix flow C in lane at 0
+        # m.eq_contingencies_fix_zero = Constraint(m.t, m.contingencies,
+        #     rule=lambda m, t, a, b: m.varAngleC[t, a, a, b] == m.varAngleC[t, b, a, b])
     
         
         self.m = m
