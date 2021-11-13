@@ -1,4 +1,6 @@
 from functools import reduce
+import numpy as np
+import matplotlib.pyplot as plt
 
 class Unit(object):
     def __init__(self, name):
@@ -14,6 +16,12 @@ class System(object):
 
     def __getitem__(self, key):
         return self.units[key]
+
+    def plot_input_output(self):
+        for name, u in self.units.items():   
+            pp = np.linspace(u.min_power, u.max_power, 30)
+            plt.plot(pp, u.input_output(pp), label=name)
+        plt.legend()
 
 class UCSystem(System):
     def __init__(self, units, reserve_req=0):

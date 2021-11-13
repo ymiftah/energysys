@@ -298,15 +298,9 @@ class SCDCModel(DCModel):
             
         # Raction Rate Equations
         def eq_contingency_react_up(m, t, u, ca, cb):
-            if  system[u].ramp_up is None:
-                return Constraint.Skip
-            else:
-                return m.varPowerC[t, u, ca, cb] <= m.varPower[t, u] + system[u].ramp_up
+            return m.varPowerC[t, u, ca, cb] <= m.varPower[t, u] + system[u].ramp_up
         def eq_contingency_react_down(m, t, u, ca, cb):
-            if  system[u].ramp_down is None:
-                return Constraint.Skip
-            else:
-                return  m.varPowerC[t, u, ca, cb] >= m.varPower[t, u] - system[u].ramp_down
+            return  m.varPowerC[t, u, ca, cb] >= m.varPower[t, u] - system[u].ramp_down
         m.eq_contingency_react_up = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_react_up)
         m.eq_contingency_react_down = Constraint(m.t, m.units, m.contingencies, rule=eq_contingency_react_down)
 
