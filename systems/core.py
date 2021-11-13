@@ -22,6 +22,8 @@ class System(object):
             pp = np.linspace(u.min_power, u.max_power, 30)
             plt.plot(pp, u.input_output(pp), label=name)
         plt.legend()
+        plt.xlabel('Power [kW]')
+        plt.ylabel('Fuel Consumption [kWh]')
 
 class UCSystem(System):
     def __init__(self, units, reserve_req=0):
